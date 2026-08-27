@@ -237,6 +237,102 @@ def probar_dialogo_nunca_descarta_solo() -> None:
           and "OPCION_SOLO_TRANSCRIBIR" in fuente)
 
 
+def probar_el_nombre_del_archivo_manda_sobre_el_dia() -> None:
+    """
+    El caso real que esto arregla: el 26-08-2026 (miercoles) se subieron dos
+    grabaciones, la clase de DESEMPENO ORGANIZACIONAL y una reunion informativa
+    de un ramo anexo. Como el dia tenia ramo asignado, las dos se archivaron
+    como esa clase, sin preguntar, y chocaron de numero.
+
+    Los nombres de archivo de aqui son los reales que pasaron por el sistema,
+    con las faltas de ortografia incluidas. Son la calibracion del umbral: si
+    alguien lo mueve, esto tiene que seguir pasando.
+    """
+    print("\n== el nombre del archivo manda sobre el dia de la semana ==")
+    from orquestador import ramo_por_nombre as rpn
+
+    config = {
+        "ramos": {
+            "lunes": {"nombre": "MARKETING ESTRATÉGICO", "perfil_whisper": "es-chile"},
+            "martes": {"nombre": "MERCADOS Y ESTRUCTURA ECONÓMICA", "perfil_whisper": "es-chile"},
+            "miercoles": {"nombre": "DESEMPEÑO ORGANIZACIONAL", "perfil_whisper": "es-chile"},
+            "jueves": {"nombre": "ECONOMETRÍA", "perfil_whisper": "es-chile"},
+            "viernes": {"nombre": "TALLER EN BUSINESS ANALYTICS III", "perfil_whisper": "es-chile"},
+        },
+        "semestre": {"fecha_inicio": "2026-08-03"},
+    }
+
+    reconoce = [
+        ("Marketing estratégico 24.08.26.m4a", "MARKETING ESTRATÉGICO"),
+        ("Econometría 13.08.26.m4a", "ECONOMETRÍA"),
+        ("Desempeño organizacional 26.08.26.m4a", "DESEMPEÑO ORGANIZACIONAL"),
+        # Con la falta de ortografia del estudiante y sin la palabra "Taller".
+        ("Business Analitics III 21.08.26.m4a", "TALLER EN BUSINESS ANALYTICS III"),
+        # "Mercado" en singular.
+        ("Mercado y estructura económica 18.8.26.m4a", "MERCADOS Y ESTRUCTURA ECONÓMICA"),
+        # Otros formatos de fecha que el estudiante usa.
+        ("Marketing estratégico 3-8-26.m4a", "MARKETING ESTRATÉGICO"),
+        # Sufijo de parte que agrega el propio sistema al cortar un audio largo.
+        ("Marketing estratégico 10.08.26 - parte 03.m4a", "MARKETING ESTRATÉGICO"),
+    ]
+    for nombre, esperado in reconoce:
+        estado, info = rpn.resolver([nombre], config)
+        check(f"'{nombre[:34]}' -> {esperado[:24]}",
+              estado == rpn.RECONOCIDO and info["nombre"] == esperado,
+              f"dio {estado} / {info}")
+
+    # El caso que motivo todo: palabras reales que no son ningun ramo del
+    # horario. No puede caer al dia de la semana.
+    pregunta = [
+        "Medición competencias intermedias 26.08.26.m4a",
+        "Reunión secretario académico 30.08.m4a",
+        "Conversación con Javier.m4a",
+    ]
+    for nombre in pregunta:
+        estado, info = rpn.resolver([nombre], config)
+        check(f"'{nombre[:34]}' -> pregunta",
+              estado == rpn.NO_CALZA and info is None, f"dio {estado} / {info}")
+
+    # Un nombre sin contenido no es evidencia de nada: ahi si manda el dia.
+    for nombre in ["Nota de voz 3.m4a", "Grabación 12.m4a", "audio.m4a", "Clase.m4a"]:
+        estado, _ = rpn.resolver([nombre], config)
+        check(f"'{nombre}' -> sin senal, decide el dia", estado == rpn.SIN_SENAL,
+              f"dio {estado}")
+
+    # Un ramo agregado a mano tiene que reconocerse igual que los del horario.
+    con_adicional = dict(config)
+    con_adicional["ramos_adicionales"] = {
+        "MIC - MEDICIÓN INTERMEDIA DE COMPETENCIAS": {"perfil_whisper": "es-chile"}
+    }
+    estado, info = rpn.resolver(["Medición competencias intermedias 26.08.26.m4a"], con_adicional)
+    check("una vez creado el ramo, la siguiente reunion se reconoce sola",
+          estado == rpn.RECONOCIDO and info["nombre"].startswith("MIC"),
+          f"dio {estado} / {info}")
+
+    # Partes de ramos distintos agrupadas: ya fusiono dos clases una vez.
+    estado, _ = rpn.resolver(
+        ["Desempeño organizacional 19.08.26.m4a", "Econometría 20.08.26.m4a"], config)
+    check("dos ramos distintos en un mismo trabajo -> pregunta", estado == rpn.NO_CALZA,
+          f"dio {estado}")
+
+    # Y el efecto completo sobre la deteccion: el mismo miercoles, dos
+    # grabaciones, cada una a su lugar.
+    miercoles = date(2026, 8, 26)
+    clase = deteccion.resolver_ramo_de_grabacion(
+        ["Desempeño organizacional 26.08.26.m4a"], miercoles, config)
+    reunion = deteccion.resolver_ramo_de_grabacion(
+        ["Medición competencias intermedias 26.08.26.m4a"], miercoles, config)
+    check("el miercoles, la clase real sigue siendo la clase",
+          clase and clase["nombre"] == "DESEMPEÑO ORGANIZACIONAL", f"dio {clase}")
+    check("el mismo miercoles, la reunion no se archiva sola",
+          reunion is None, f"dio {reunion}")
+
+    # Sin nombre util, el comportamiento de siempre: manda el dia.
+    por_dia = deteccion.resolver_ramo_de_grabacion(["Nota de voz 3.m4a"], miercoles, config)
+    check("sin nombre util se mantiene el comportamiento de siempre",
+          por_dia and por_dia["nombre"] == "DESEMPEÑO ORGANIZACIONAL", f"dio {por_dia}")
+
+
 def probar_bitacora_deshace_todo() -> None:
     """
     El aborto promete dejar el disco como estaba. Si el deshacer falla, esa
@@ -1588,6 +1684,7 @@ if __name__ == "__main__":
     probar_aislamiento_del_ensayo()
     probar_archivado_no_destructivo()
     probar_dialogo_nunca_descarta_solo()
+    probar_el_nombre_del_archivo_manda_sobre_el_dia()
     probar_bitacora_deshace_todo()
     probar_bitacora_no_borra_lo_ajeno()
     probar_seccion_critica()
